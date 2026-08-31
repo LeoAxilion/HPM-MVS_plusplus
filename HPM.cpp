@@ -562,9 +562,9 @@ void HPM::CudaSpaceRelease(bool geom_consistency)
 void HPM::ReleaseProblemHostMemory() {
 	//delete(plane_hypotheses_host);
 	//delete(costs_host);
-	images.swap(std::vector<cv::Mat>());
-	cameras.swap(std::vector<Camera>());
-	depths.swap(std::vector<cv::Mat>());
+	std::vector<cv::Mat>().swap(images);
+	std::vector<Camera>().swap(cameras);
+	std::vector<cv::Mat>().swap(depths);
 	std::cout << "Releasing Host memory..." << std::endl;
 }
 
@@ -1263,7 +1263,8 @@ void RunJBU(const cv::Mat_<float>& scaled_image_float, const cv::Mat_<float>& sr
 	std::stringstream result_path;
 	result_path << dense_folder << "/HPM_MVS_plusplus" << "/2333_" << std::setw(8) << std::setfill('0') << problem.ref_image_id;
 	std::string result_folder = result_path.str();
-	mkdir(result_folder.c_str());
+	// mkdir(result_folder.c_str());	//windows
+	mkdir(result_folder.c_str(), 0755);	//linux
 	std::string depth_path = result_folder + "/depths.dmb";
 	writeDepthDmb(depth_path, disp0);
 

@@ -26,9 +26,9 @@
 #include <memory>
 #include "iomanip"
 
-#include<direct.h>
-#include <sys/stat.h> // mkdir
-#include <sys/types.h> // mkdir
+// #include<direct.h>  //windows mkdir
+#include <sys/stat.h> //linux mkdir
+#include <sys/types.h> //linux mkdir
 
 
 #define MAX_IMAGES 256
