@@ -318,23 +318,6 @@ def processing_single_scene(args):
         shutil.rmtree(cam_dir)
 
     cameras, images, points3d = read_model(model_dir, args.model_ext)
-
-    # A depth range and a co-visible source view can only be determined for an
-    # image that observes at least one triangulated sparse point.  COLMAP may
-    # retain registered images whose POINT3D_ID entries are all -1.
-    valid_images = {
-        image_id: image for image_id, image in images.items()
-        if np.any(image.point3D_ids != -1)
-    }
-    skipped_images = len(images) - len(valid_images)
-    if skipped_images:
-        print('skip {} images without triangulated 3D points'.format(
-            skipped_images))
-    if not valid_images:
-        raise RuntimeError(
-            'The sparse model contains no images with triangulated 3D points; '
-            'cannot estimate MVS depth ranges.')
-    images = valid_images
     num_images = len(list(images.items()))
 
     param_type = {
@@ -389,7 +372,7 @@ def processing_single_scene(args):
             if p3d_id == -1:
                 continue
             transformed = np.matmul(extrinsic[i+1], [points3d[p3d_id].xyz[0], points3d[p3d_id].xyz[1], points3d[p3d_id].xyz[2], 1])
-            zs.append(transformed[2].item())
+            zs.append(np.asscalar(transformed[2]))
         zs_sorted = sorted(zs)
         # relaxed depth range
         depth_min = zs_sorted[int(len(zs) * .01)] * 0.75
