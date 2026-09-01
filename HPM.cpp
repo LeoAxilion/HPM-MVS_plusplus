@@ -881,7 +881,7 @@ void HPM::CudaConfidenceInitialization(const std::string& dense_folder, const st
 	std::stringstream result_path;
 	result_path << dense_folder << "/HPM_MVS_plusplus" << "/2333_" << std::setw(8) << std::setfill('0') << problem.ref_image_id;
 	std::string result_folder = result_path.str();
-	std::string confidence_path = result_folder + "/Confidence.dmb";
+	std::string confidence_path = result_folder + "/confidence.dmb";
 	cv::Mat_<float>confidences;
 	confidences_host = new float[cameras[0].height * cameras[0].width];
 	readDepthDmb(confidence_path, confidences);
