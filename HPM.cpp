@@ -962,15 +962,24 @@ void HPM::CudaPlanarPriorInitialization(const std::vector<float4>& PlaneParams, 
 	for (int i = 0; i < cameras[0].width; ++i) {
 		for (int j = 0; j < cameras[0].height; ++j) {
 			int center = j * cameras[0].width + i;
-			plane_masks_host[center] = (unsigned int)masks(j, i);
-			if (masks(j, i) > 0) {
-				prior_planes_host[center] = PlaneParams[masks(j, i) - 1];
+			prior_planes_host[center] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+			const unsigned int plane_label = (unsigned int)masks(j, i);
+			if (plane_label > 0 && plane_label <= PlaneParams.size()) {
+				plane_masks_host[center] = plane_label;
+				prior_planes_host[center] = PlaneParams[plane_label - 1];
+			}
+			else {
+				plane_masks_host[center] = 0;
 			}
 		}
 	}
 
 	cudaMemcpy(prior_planes_cuda, prior_planes_host, sizeof(float4) * (cameras[0].height * cameras[0].width), cudaMemcpyHostToDevice);
 	cudaMemcpy(plane_masks_cuda, plane_masks_host, sizeof(unsigned int) * (cameras[0].height * cameras[0].width), cudaMemcpyHostToDevice);
+	delete[] prior_planes_host;
+	prior_planes_host = nullptr;
+	delete[] plane_masks_host;
+	plane_masks_host = nullptr;
 }
 
 int HPM::GetReferenceImageWidth()
@@ -986,6 +995,11 @@ int HPM::GetReferenceImageHeight()
 cv::Mat HPM::GetReferenceImage()
 {
 	return images[0];
+}
+
+Camera HPM::GetReferenceCamera() const
+{
+	return cameras[0];
 }
 
 float4 HPM::GetPlaneHypothesis(const int index)
@@ -1017,8 +1031,9 @@ void HPM::GetSupportPoints_Classify_Check(std::vector<cv::Point>& support2DPoint
 {
 	support2DPoints.clear();
 	const int step_size = 5;
-	const int width = GetReferenceImageWidth() * hpm_factor;
-	const int height = GetReferenceImageHeight() * hpm_factor;
+	const int width = costs.cols;
+	const int height = costs.rows;
+	(void)hpm_factor;
 
 	for (int col = 0; col < width; col += step_size) {
 		for (int row = 0; row < height; row += step_size) {
@@ -1433,6 +1448,7 @@ void HPM::ReloadPlanarPriorInitialization(const cv::Mat_<float>& masks, float4* 
 		for (int j = 0; j < cameras[0].height; ++j) {
 			int center = j * cameras[0].width + i;
 			plane_masks_host[center] = (unsigned int)masks(j, i);
+			prior_planes_host[center] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 			if (masks(j, i) > 0) {
 				prior_planes_host[center] = prior_plane_parameters[center];
 			}
@@ -1440,4 +1456,8 @@ void HPM::ReloadPlanarPriorInitialization(const cv::Mat_<float>& masks, float4* 
 	}
 	cudaMemcpy(prior_planes_cuda, prior_planes_host, sizeof(float4) * (cameras[0].height * cameras[0].width), cudaMemcpyHostToDevice);
 	cudaMemcpy(plane_masks_cuda, plane_masks_host, sizeof(unsigned int) * (cameras[0].height * cameras[0].width), cudaMemcpyHostToDevice);
+	delete[] prior_planes_host;
+	prior_planes_host = nullptr;
+	delete[] plane_masks_host;
+	plane_masks_host = nullptr;
 }

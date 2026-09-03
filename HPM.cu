@@ -241,7 +241,7 @@ __device__ float4 GeneratePertubedPlaneHypothesis(const Camera camera, const int
         dist_perturbed = curand_uniform(rand_state) * (dist_max_perturbed - dist_min_perturbed) + dist_min_perturbed;
         plane_hypothesis_temp.w = dist_perturbed;
         depth_perturbed = ComputeDepthfromPlaneHypothesis(camera, plane_hypothesis_temp, p);
-    } while (depth_perturbed < depth_min && depth_perturbed > depth_max);
+    } while (depth_perturbed < depth_min || depth_perturbed > depth_max);
 
     float4 plane_hypothesis = GeneratePerturbedNormal(camera, p, plane_hypothesis_now, rand_state, perturbation * M_PI);
     plane_hypothesis.w = dist_perturbed;
@@ -592,6 +592,7 @@ __global__ void RandomInitialization(cudaTextureObjects* texture_objects, Camera
             if (confidences[center] > 0.3) {
                 float4 plane_hypothesis = plane_hypotheses[center];
                 float depth = plane_hypothesis.w;
+                plane_hypothesis = TransformNormal2RefCam(cameras[0], plane_hypothesis);
                 plane_hypothesis.w = GetDistance2Origin(cameras[0], p, depth, plane_hypothesis);
                 plane_hypotheses[center] = plane_hypothesis;
                 costs[center] = 0.1;
@@ -601,18 +602,19 @@ __global__ void RandomInitialization(cudaTextureObjects* texture_objects, Camera
                     float perturbation = 0.02f;
 
                     float4 plane_hypothesis = prior_planes[center];
-                    float depth_perturbed = plane_hypothesis.w;
+                    float depth_perturbed = ComputeDepthfromPlaneHypothesis(cameras[0], plane_hypothesis, p);
                     const float depth_min_perturbed = (1 - 3 * perturbation) * depth_perturbed;
                     const float depth_max_perturbed = (1 + 3 * perturbation) * depth_perturbed;
                     depth_perturbed = curand_uniform(&rand_states[center]) * (depth_max_perturbed - depth_min_perturbed) + depth_min_perturbed;
                     float4 plane_hypothesis_perturbed = GeneratePerturbedNormal(cameras[0], p, plane_hypothesis, &rand_states[center], 3 * perturbation * M_PI);
-                    plane_hypothesis_perturbed.w = depth_perturbed;
+                    plane_hypothesis_perturbed.w = GetDistance2Origin(cameras[0], p, depth_perturbed, plane_hypothesis_perturbed);
                     plane_hypotheses[center] = plane_hypothesis_perturbed;
                     costs[center] = ComputeMultiViewInitialCostandSelectedViews(texture_objects[0].images, cameras, p, plane_hypotheses[center], &selected_views[center], params);
                 }
                 else {
                     float4 plane_hypothesis = plane_hypotheses[center];
                     float depth = plane_hypothesis.w;
+                    plane_hypothesis = TransformNormal2RefCam(cameras[0], plane_hypothesis);
                     plane_hypothesis.w = GetDistance2Origin(cameras[0], p, depth, plane_hypothesis);
                     plane_hypotheses[center] = plane_hypothesis;
                     costs[center] = ComputeMultiViewInitialCostandSelectedViews(texture_objects[0].images, cameras, p, plane_hypotheses[center], &selected_views[center], params);
@@ -622,6 +624,7 @@ __global__ void RandomInitialization(cudaTextureObjects* texture_objects, Camera
         else {
             float4 plane_hypothesis = plane_hypotheses[center];
             float depth = plane_hypothesis.w;
+            plane_hypothesis = TransformNormal2RefCam(cameras[0], plane_hypothesis);
             plane_hypothesis.w = GetDistance2Origin(cameras[0], p, depth, plane_hypothesis);
             plane_hypotheses[center] = plane_hypothesis;
             if (confidences[center] > 0.3) {
@@ -791,7 +794,7 @@ __device__ void PlaneHypothesisRefinement(const cudaTextureObject_t* images, con
     const float depth_max_perturbed = (1 + perturbation) * depth_perturbed;
     do {
         depth_perturbed = curand_uniform(rand_state) * (depth_max_perturbed - depth_min_perturbed) + depth_min_perturbed;
-    } while (depth_perturbed < params.depth_min && depth_perturbed > params.depth_max);
+    } while (depth_perturbed < params.depth_min || depth_perturbed > params.depth_max);
     float4 plane_hypothesis_perturbed = GeneratePerturbedNormal(cameras[0], p, *plane_hypothesis, rand_state, perturbation * M_PI);
 
     const int num_planes = 5;
@@ -1786,8 +1789,9 @@ __device__ void CheckerboardPropagation(const cudaTextureObject_t* images, const
     cost_now /= weight_norm;
     costs[center] = cost_now;
     float depth_now = ComputeDepthfromPlaneHypothesis(cameras[0], plane_hypotheses[center], p);
+    float4 plane_hypotheses_now = plane_hypotheses[center];
     float restricted_cost = 0.0f;
-    float texture;
+    float texture = 0.0f;
     if (params.prior_consistency) {
         float restricted_final_costs[8] = { 0.0f };
         float gamma = 0.5f;
@@ -1795,11 +1799,12 @@ __device__ void CheckerboardPropagation(const cudaTextureObject_t* images, const
         float two_depth_sigma_squared = 2 * depth_sigma * depth_sigma;
         float angle_sigma = M_PI * (5.0f / 180.0f);
         float two_angle_sigma_squared = 2 * angle_sigma * angle_sigma;
-        float depth_prior = ComputeDepthfromPlaneHypothesis(cameras[0], prior_planes[center], p);
+        float depth_prior = 0.0f;
         float beta = 0.18f;
         texture = ComputeTexture(Canny, cameras, p);
 
         if (plane_masks[center] > 0) {
+            depth_prior = ComputeDepthfromPlaneHypothesis(cameras[0], prior_planes[center], p);
             for (int i = 0; i < 8; i++) {
                 if (flag[i]) {
                     float depth_now = ComputeDepthfromPlaneHypothesis(cameras[0], plane_hypotheses[positions[i]], p);
@@ -1812,19 +1817,19 @@ __device__ void CheckerboardPropagation(const cudaTextureObject_t* images, const
             const int max_cost_idx = FindMaxCostIndex(restricted_final_costs, 8);
 
             float restricted_cost_now = 0.0f;
-            float depth_now = ComputeDepthfromPlaneHypothesis(cameras[0], plane_hypotheses[center], p);
             float depth_diff = depth_now - depth_prior;
             float norm1_diff = NormDiffCalculate(prior_planes[center], plane_hypotheses[center]);
             float prior = gamma * (1.2 - 0.2 * texture) + exp(-depth_diff * depth_diff / two_depth_sigma_squared) * exp(-norm1_diff * norm1_diff / two_angle_sigma_squared);
             restricted_cost_now = exp(-cost_now * cost_now / beta * (1 + 0.2 * texture)) * prior;
+            restricted_cost = restricted_cost_now;
 
             if (flag[max_cost_idx]) {
                 float depth_before = ComputeDepthfromPlaneHypothesis(cameras[0], plane_hypotheses[positions[max_cost_idx]], p);
 
                 if (depth_before >= params.depth_min && depth_before <= params.depth_max && restricted_final_costs[max_cost_idx] > restricted_cost_now) {
                     depth_now = depth_before;
-                    plane_hypotheses[center] = plane_hypotheses[positions[max_cost_idx]];
-                    costs[center] = final_costs[max_cost_idx];
+                    plane_hypotheses_now = plane_hypotheses[positions[max_cost_idx]];
+                    cost_now = final_costs[max_cost_idx];
                     restricted_cost = restricted_final_costs[max_cost_idx];
                     selected_views[center] = temp_selected_views;
                 }
@@ -1835,13 +1840,12 @@ __device__ void CheckerboardPropagation(const cudaTextureObject_t* images, const
 
             if (depth_before >= params.depth_min && depth_before <= params.depth_max && final_costs[min_cost_idx] < cost_now) {
                 depth_now = depth_before;
-                plane_hypotheses[center] = plane_hypotheses[positions[min_cost_idx]];
-                costs[center] = final_costs[min_cost_idx];
+                plane_hypotheses_now = plane_hypotheses[positions[min_cost_idx]];
+                cost_now = final_costs[min_cost_idx];
             }
         }
     }
 
-    float4 plane_hypotheses_now;
     if (!params.prior_consistency && flag[min_cost_idx]) {
         float depth_before = ComputeDepthfromPlaneHypothesis(cameras[0], plane_hypotheses[positions[min_cost_idx]], p);
 
