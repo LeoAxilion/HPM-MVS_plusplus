@@ -71,7 +71,6 @@ public:
     int GetReferenceImageWidth();
     int GetReferenceImageHeight();
     cv::Mat GetReferenceImage();
-    Camera GetReferenceCamera() const;
     float4 GetPlaneHypothesis(const int index);
     float GetCost(const int index);
     float GetTexture(const int index);

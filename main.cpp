@@ -1,6 +1,5 @@
 #include "main.h"
 #include "HPM.h"
-#include "NearestPlanePrior.h"
 
 void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& problems)
 {
@@ -104,7 +103,7 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 	hpm.SetMandConsistencyParams(mand_consistency);
 
 	std::stringstream canny_image_path;
-	cv::Mat_<cv::Vec3b> Image_grey;
+	cv::Mat Image_grey;
 	cv::Mat Canny_edge;
 	std::string image_folder = dense_folder + std::string("/images");
 	canny_image_path << image_folder << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << ".jpg";
@@ -112,6 +111,7 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 	cv::Canny(Image_grey, Canny_edge, 50, 150);
 	std::cout << "Get Canny egdes down!" << std::endl;
 	hpm.CudaCannyInitialization(Canny_edge);
+	Image_grey.release();
 	Canny_edge.release();
 
 	if (mand_consistency || prior_consistency) {
@@ -170,93 +170,251 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 		readDepthDmb(cost_path, costs);
 
 
-		const float support_scale = std::pow(
-			0.5f, static_cast<float>(std::max(0, hpm_scale_distance)));
-		const cv::Size support_grid_size(
-			std::max(1, cvRound(width * support_scale)),
-			std::max(1, cvRound(height * support_scale)));
+		if (hpm_scale_distance == 0) {
+			const cv::Rect imageRC(0, 0, width, height);
+			std::vector<cv::Point> support2DPoints;
 
-		cv::Mat_<float> support_costs;
-		cv::Mat_<float> support_confidences;
-		if (support_grid_size.width == width && support_grid_size.height == height) {
-			support_costs = costs;
-			support_confidences = confidences;
+			std::string texture_path = result_folder + "/texture" + std::to_string(image_scale) + ".dmb";
+			cv::Mat_<float>textures;
+			readDepthDmb(texture_path, textures);
+
+			hpm.GetSupportPoints_Classify_Check(support2DPoints, costs, confidences, textures, 1);
+			const auto triangles = hpm.DelaunayTriangulation(imageRC, support2DPoints);
+
+			cv::Mat refImage = hpm.GetReferenceImage().clone();
+			std::vector<cv::Mat> mbgr(3);
+			mbgr[0] = refImage.clone();
+			mbgr[1] = refImage.clone();
+			mbgr[2] = refImage.clone();
+			cv::Mat srcImage;
+			cv::merge(mbgr, srcImage);
+			for (const auto triangle : triangles) {
+				if (imageRC.contains(triangle.pt1) && imageRC.contains(triangle.pt2) && imageRC.contains(triangle.pt3)) {
+					cv::line(srcImage, triangle.pt1, triangle.pt2, cv::Scalar(0, 0, 255));
+					cv::line(srcImage, triangle.pt1, triangle.pt3, cv::Scalar(0, 0, 255));
+					cv::line(srcImage, triangle.pt2, triangle.pt3, cv::Scalar(0, 0, 255));
+				}
+			}
+			std::string triangulation_path = result_folder + "/triangulation0.png";
+			cv::imwrite(triangulation_path, srcImage);
+
+			refImage.release();
+			mbgr.clear();
+			mbgr.shrink_to_fit();
+			srcImage.release();
+
+			cv::Mat_<float> mask_tri = cv::Mat::zeros(height, width, CV_32FC1);
+			std::vector<float4> planeParams_tri;
+			planeParams_tri.clear();
+
+			uint32_t idx = 0;
+			for (const auto triangle : triangles) {
+				if (imageRC.contains(triangle.pt1) && imageRC.contains(triangle.pt2) && imageRC.contains(triangle.pt3)) {
+					float L01 = sqrt(pow(triangle.pt1.x - triangle.pt2.x, 2) + pow(triangle.pt1.y - triangle.pt2.y, 2));
+					float L02 = sqrt(pow(triangle.pt1.x - triangle.pt3.x, 2) + pow(triangle.pt1.y - triangle.pt3.y, 2));
+					float L12 = sqrt(pow(triangle.pt2.x - triangle.pt3.x, 2) + pow(triangle.pt2.y - triangle.pt3.y, 2));
+
+					float max_edge_length = std::max(L01, std::max(L02, L12));
+					float step = 1.0 / max_edge_length;
+
+					for (float p = 0; p < 1.0; p += step) {
+						for (float q = 0; q < 1.0 - p; q += step) {
+							int x = p * triangle.pt1.x + q * triangle.pt2.x + (1.0 - p - q) * triangle.pt3.x;
+							int y = p * triangle.pt1.y + q * triangle.pt2.y + (1.0 - p - q) * triangle.pt3.y;
+							mask_tri(y, x) = idx + 1.0; // To distinguish from the label of non-triangulated areas
+						}
+					}
+					float4 n4 = hpm.GetPriorPlaneParams(triangle, depths);
+					planeParams_tri.push_back(n4);
+					idx++;
+				}
+			}
+
+			cv::Mat_<float> priordepths = cv::Mat::zeros(height, width, CV_32FC1);
+			for (int i = 0; i < width; ++i) {
+				for (int j = 0; j < height; ++j) {
+					if (mask_tri(j, i) > 0) {
+						float d = hpm.GetDepthFromPlaneParam(planeParams_tri[mask_tri(j, i) - 1], i, j);
+						if (d <= hpm.GetMaxDepth() && d >= hpm.GetMinDepth()) {
+							priordepths(j, i) = d;
+						}
+						else {
+							mask_tri(j, i) = 0;
+						}
+					}
+				}
+			}
+			std::string prior_path = result_folder + "/depths_prior0.dmb";
+			writeDepthDmb(prior_path, priordepths);
+			priordepths.release();
+
+			hpm.CudaPlanarPriorInitialization(planeParams_tri, mask_tri);
+			hpm.CudaHypothesesReload(depths, costs, normals);
+			hpm.RunPatchMatch();
+			textures.release();
+			mask_tri.release();
+			planeParams_tri.clear();
+			planeParams_tri.shrink_to_fit();
+			support2DPoints.clear();
+			support2DPoints.shrink_to_fit();
+			planeParams_tri.clear();
+			planeParams_tri.shrink_to_fit();
 		}
-		else {
-			cv::resize(costs, support_costs, support_grid_size, 0, 0, cv::INTER_LINEAR);
-			cv::resize(confidences, support_confidences, support_grid_size, 0, 0, cv::INTER_LINEAR);
+		else if (hpm_scale_distance == 1 || hpm_scale_distance == 2) {
+			float hpm_factor = 1.0 / (hpm_scale_distance * 2);
+			int hpm_width = std::round(width * hpm_factor);
+			int hpm_height = std::round(height * hpm_factor);
+
+			cv::Mat_<float>depths_downsample;
+			cv::Mat_<float>costs_downsample;
+			cv::Mat_<float>confidences_downsample;
+
+			cv::resize(depths, depths_downsample, cv::Size(hpm_width, hpm_height), 0, 0, cv::INTER_LINEAR);
+			cv::resize(costs, costs_downsample, cv::Size(hpm_width, hpm_height), 0, 0, cv::INTER_LINEAR);
+			cv::resize(confidences, confidences_downsample, cv::Size(hpm_width, hpm_height), 0, 0, cv::INTER_LINEAR);
+
+
+
+			std::string texture_path = result_folder + "/texture" + std::to_string(image_scale + hpm_scale_distance) + ".dmb";
+			cv::Mat_<float>textures;
+			readDepthDmb(texture_path, textures);
+
+			const cv::Rect imageRC(0, 0, hpm_width, hpm_height);
+			std::vector<cv::Point> support2DPoints;
+			support2DPoints.clear();
+			hpm.GetSupportPoints_Classify_Check(support2DPoints, costs_downsample, confidences_downsample, textures, hpm_factor);
+
+			const auto triangles = hpm.DelaunayTriangulation(imageRC, support2DPoints);
+
+			cv::Mat refImage;
+			cv::resize(hpm.GetReferenceImage().clone(), refImage, cv::Size(hpm_width, hpm_height), 0, 0, cv::INTER_LINEAR);
+			std::vector<cv::Mat> mbgr(3);
+			mbgr[0] = refImage.clone();
+			mbgr[1] = refImage.clone();
+			mbgr[2] = refImage.clone();
+			cv::Mat srcImage;
+			cv::merge(mbgr, srcImage);
+			for (const auto triangle : triangles) {
+				if (imageRC.contains(triangle.pt1) && imageRC.contains(triangle.pt2) && imageRC.contains(triangle.pt3)) {
+					cv::line(srcImage, triangle.pt1, triangle.pt2, cv::Scalar(0, 0, 255));
+					cv::line(srcImage, triangle.pt1, triangle.pt3, cv::Scalar(0, 0, 255));
+					cv::line(srcImage, triangle.pt2, triangle.pt3, cv::Scalar(0, 0, 255));
+				}
+			}
+			std::string triangulation_path = result_folder + "/triangulation" + std::to_string(hpm_scale_distance) + ".png";
+			cv::imwrite(triangulation_path, srcImage);
+
+			std::vector<float4>planeParams_tri;
+			cv::Mat_<float> mask_tri = cv::Mat::zeros(hpm_height, hpm_width, CV_32FC1);
+			planeParams_tri.clear();
+			uint32_t idx = 0;
+			for (const auto triangle : triangles) {
+				if (imageRC.contains(triangle.pt1) && imageRC.contains(triangle.pt2) && imageRC.contains(triangle.pt3)) {
+					float L01 = sqrt(pow(triangle.pt1.x - triangle.pt2.x, 2) + pow(triangle.pt1.y - triangle.pt2.y, 2));
+					float L02 = sqrt(pow(triangle.pt1.x - triangle.pt3.x, 2) + pow(triangle.pt1.y - triangle.pt3.y, 2));
+					float L12 = sqrt(pow(triangle.pt2.x - triangle.pt3.x, 2) + pow(triangle.pt2.y - triangle.pt3.y, 2));
+
+					float max_edge_length = std::max(L01, std::max(L02, L12));
+					float step = 1.0 / max_edge_length;
+
+					for (float p = 0; p < 1.0; p += step) {
+						for (float q = 0; q < 1.0 - p; q += step) {
+							int x = p * triangle.pt1.x + q * triangle.pt2.x + (1.0 - p - q) * triangle.pt3.x;
+							int y = p * triangle.pt1.y + q * triangle.pt2.y + (1.0 - p - q) * triangle.pt3.y;
+							mask_tri(y, x) = idx + 1.0; // To distinguish from the label of non-triangulated areas
+						}
+					}
+					//renew the camera's parameters 
+					float4 n4 = hpm.GetPriorPlaneParams_factor(triangle, depths_downsample, hpm_factor);
+					planeParams_tri.push_back(n4);
+					idx++;
+				}
+			}
+
+			cv::Mat_<float>priordepths = cv::Mat::zeros(hpm_height, hpm_width, CV_32FC1);
+			cv::Mat_<cv::Vec3f>priornormals = cv::Mat::zeros(hpm_height, hpm_width, CV_32FC3);
+
+			for (int i = 0; i < hpm_width; ++i) {
+				for (int j = 0; j < hpm_height; ++j) {
+					if (mask_tri(j, i) > 0) {
+						float d = hpm.GetDepthFromPlaneParam_factor(planeParams_tri[mask_tri(j, i) - 1], i, j, hpm_factor);
+						if (d <= hpm.GetMaxDepth() * 1.2f && d >= hpm.GetMinDepth() * 0.6f) {
+							priordepths(j, i) = d;
+							float4 tmp_n4 = hpm.TransformNormal(planeParams_tri[mask_tri(j, i) - 1]);
+							priornormals(j, i)[0] = tmp_n4.x;
+							priornormals(j, i)[1] = tmp_n4.y;
+							priornormals(j, i)[2] = tmp_n4.z;
+						}
+						else {
+							mask_tri(j, i) = 0;
+						}
+					}
+				}
+			}
+
+			std::string depths_prior_path = result_folder + "/depths_prior" + std::to_string(hpm_scale_distance) + ".dmb";
+			writeDepthDmb(depths_prior_path, priordepths);
+
+			std::stringstream image_path;
+			image_path << dense_folder << "/images" << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << ".jpg";
+			cv::Mat_<uint8_t> image_uint;
+			cv::resize(cv::imread(image_path.str(), cv::IMREAD_GRAYSCALE), image_uint, cv::Size(width, height), 0, 0, cv::INTER_LINEAR);
+			cv::Mat image_float;
+			image_uint.convertTo(image_float, CV_32FC1);
+			cv::Mat_<float>priordepths_upsample = cv::Mat::zeros(height, width, CV_32FC1);
+			cv::Mat_ < cv::Vec3f >priornormals_upsample = cv::Mat::zeros(height, width, CV_32FC3);
+			std::cout << "Running JBU..." << std::endl;
+			hpm.JointBilateralUpsampling_prior(image_float, priordepths, priordepths_upsample, priornormals, priornormals_upsample);
+
+			cv::Mat_<float>mask_tri_new = cv::Mat::zeros(height, width, CV_32FC1);
+			float4* prior_planeParams = new float4[height * width];
+			for (int i = 0; i < width; i++) {
+				for (int j = 0; j < height; j++) {
+					if (priordepths_upsample(j, i) <= hpm.GetMaxDepth() && priordepths_upsample(j, i) >= hpm.GetMinDepth()) {
+						mask_tri_new(j, i) = 1;
+						int center = j * width + i;
+						float4 tmp_reload;
+						tmp_reload.x = priornormals_upsample(j, i)[0];
+						tmp_reload.y = priornormals_upsample(j, i)[1];
+						tmp_reload.z = priornormals_upsample(j, i)[2];
+						tmp_reload.w = priordepths_upsample(j, i);
+						tmp_reload = hpm.TransformNormal2RefCam(tmp_reload);
+						float depth_now = tmp_reload.w;
+						int2 p = make_int2(i, j);
+						tmp_reload.w = hpm.GetDistance2Origin(p, depth_now, tmp_reload);
+						prior_planeParams[center] = tmp_reload;
+					}
+					else {
+						mask_tri_new(j, i) = 0;
+					}
+				}
+			}
+
+			depths_prior_path = result_folder + "/depths_prior" + std::to_string(hpm_scale_distance) + "_upsample.dmb";
+			writeDepthDmb(depths_prior_path, priordepths_upsample);
+			hpm.ReloadPlanarPriorInitialization(mask_tri_new, prior_planeParams);
+			hpm.CudaHypothesesReload(depths, costs, normals);
+			hpm.RunPatchMatch();
+
+			refImage.release();
+			mbgr.clear();
+			mbgr.shrink_to_fit();
+			srcImage.release();
+			textures.release();
+			support2DPoints.clear();
+			support2DPoints.shrink_to_fit();
+			depths_downsample.release();
+			costs_downsample.release();
+			confidences_downsample.release();
+			priordepths.release();
+			priornormals.release();
+			image_uint.release();
+			image_float.release();
+			priordepths_upsample.release();
+			priornormals_upsample.release();
+			mask_tri_new.release();
+			delete(prior_planeParams);
 		}
-
-		std::string texture_path = result_folder + "/texture"
-			+ std::to_string(image_scale + hpm_scale_distance) + ".dmb";
-		cv::Mat_<float> support_textures;
-		if (readDepthDmb(texture_path, support_textures) != 0) {
-			std::cerr << "Cannot read " << texture_path
-				<< "; using a zero texture map for support selection." << std::endl;
-			support_textures = cv::Mat_<float>::zeros(support_grid_size);
-		}
-		if (support_textures.size() != support_grid_size) {
-			cv::Mat_<float> resized_textures;
-			cv::resize(support_textures, resized_textures, support_grid_size, 0, 0, cv::INTER_LINEAR);
-			support_textures = resized_textures;
-		}
-
-		std::vector<cv::Point> support2DPoints;
-		hpm.GetSupportPoints_Classify_Check(
-			support2DPoints,
-			support_costs,
-			support_confidences,
-			support_textures,
-			support_scale);
-
-		HNSWPlanarPriorResult prior_result = BuildHNSWPlanarPrior(
-			support2DPoints,
-			support_grid_size,
-			depths,
-			normals,
-			Image_grey,
-			hpm.GetReferenceCamera(),
-			hpm.GetMinDepth(),
-			hpm.GetMaxDepth());
-
-		std::cout << "HNSW planar prior: "
-			<< prior_result.stats.valid_support_count << " valid / "
-			<< prior_result.stats.input_support_count << " input reliable points, "
-			<< prior_result.stats.assigned_pixel_count << " assigned pixels, "
-			<< prior_result.stats.invalid_projected_depth_count
-			<< " invalid projected depths." << std::endl;
-
-		const std::string scale_suffix = std::to_string(hpm_scale_distance);
-		const std::string prior_path =
-			result_folder + "/depths_prior" + scale_suffix + ".dmb";
-		writeDepthDmb(prior_path, prior_result.prior_depths);
-
-		cv::Mat support_image = Image_grey.clone();
-		for (size_t support_idx = 0;
-			support_idx < prior_result.mapped_support_points.size();
-			++support_idx) {
-			const cv::Point& point = prior_result.mapped_support_points[support_idx];
-			support_image.at<cv::Vec3b>(point.y, point.x) = cv::Vec3b(0, 255, 0);
-		}
-		const std::string support_path =
-			result_folder + "/hnsw_support_points" + scale_suffix + ".png";
-		cv::imwrite(support_path, support_image);
-		support_image.release();
-
-		hpm.CudaPlanarPriorInitialization(
-			prior_result.plane_parameters,
-			prior_result.plane_labels);
-		prior_result.plane_labels.release();
-		prior_result.prior_depths.release();
-		std::vector<float4>().swap(prior_result.plane_parameters);
-		std::vector<cv::Point>().swap(prior_result.mapped_support_points);
-		support_costs.release();
-		support_confidences.release();
-		support_textures.release();
-		confidences.release();
-		std::vector<cv::Point>().swap(support2DPoints);
-		hpm.CudaHypothesesReload(depths, costs, normals);
-		hpm.RunPatchMatch();
 
 		for (int col = 0; col < width; ++col) {
 			for (int row = 0; row < height; ++row) {
@@ -287,7 +445,6 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 		writeDepthDmb(texture_path, texture);
 	}
 	texture.release();
-	Image_grey.release();
 	depths.release();
 	normals.release();
 	costs.release();
@@ -683,7 +840,6 @@ void ConfidenceEvaluation(std::string& dense_folder, const std::vector<Problem>&
 		std::vector<int2> used_list(num_ngb, make_int2(-1, -1));
 		for (int r = 0; r < rows; ++r) {
 			for (int c = 0; c < cols; ++c) {
-				std::fill(used_list.begin(), used_list.end(), make_int2(-1, -1));
 				if (masks[i].at<uchar>(r, c) == 1)
 					continue;
 				float ref_depth = depths[i].at<float>(r, c);

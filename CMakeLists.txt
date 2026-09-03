@@ -6,8 +6,6 @@ find_package(OpenCV REQUIRED )
 
 include_directories(${OpenCV_INCLUDE_DIRS})
 include_directories(.)
-# hnswlib v0.8.0 is a header-only dependency vendored with its license.
-include_directories(SYSTEM ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hnswlib)
 
 set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS};-O3 --use_fast_math --maxrregcount=128 --ptxas-options=-v -std=c++11 --compiler-options -Wall -gencode arch=compute_86,code=sm_86)
 if(CMAKE_COMPILER_IS_GNUCXX)
@@ -19,8 +17,6 @@ if(CMAKE_COMPILER_IS_GNUCXX)
     add_definitions(-Wno-unused-function)
     add_definitions(-Wno-switch)
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -ffast-math -march=native") # extend release-profile with fast-math
-	# This file validates NaN/Inf depth and normal inputs before indexing.
-	set_source_files_properties(NearestPlanePrior.cpp PROPERTIES COMPILE_FLAGS "-fno-fast-math")
 endif()
 
 find_package(OpenMP)
@@ -37,8 +33,6 @@ cuda_add_executable(
     HPM.h
     HPM.cpp
     HPM.cu
-    NearestPlanePrior.h
-    NearestPlanePrior.cpp
     main.cpp
     )
 
