@@ -96,7 +96,17 @@ void CudaCheckError(const char* file, const int line) {
 	}
 }
 
-HPM::HPM() {}
+HPM::HPM()
+	: plane_hypotheses_host(nullptr), scaled_plane_hypotheses_host(nullptr),
+	  costs_host(nullptr), pre_costs_host(nullptr), prior_planes_host(nullptr),
+	  plane_masks_host(nullptr), confidences_host(nullptr), texture_host(nullptr),
+	  cameras_cuda(nullptr), texture_objects_cuda(nullptr),
+	  texture_depths_cuda(nullptr), plane_hypotheses_cuda(nullptr),
+	  scaled_plane_hypotheses_cuda(nullptr), costs_cuda(nullptr),
+	  pre_costs_cuda(nullptr), rand_states_cuda(nullptr),
+	  selected_views_cuda(nullptr), depths_cuda(nullptr),
+	  prior_planes_cuda(nullptr), plane_masks_cuda(nullptr),
+	  confidences_cuda(nullptr), Canny_cuda(nullptr), texture_cuda(nullptr) {}
 
 HPM::~HPM()
 {
@@ -538,25 +548,48 @@ void HPM::SetMandConsistencyParams(bool flag)
 
 void HPM::CudaPlanarPriorRelease() {
 	cudaFree(prior_planes_cuda);
+	prior_planes_cuda = nullptr;
 	cudaFree(plane_masks_cuda);
+	plane_masks_cuda = nullptr;
 	cudaFree(Canny_cuda);
+	Canny_cuda = nullptr;
 	//updated by ChunLin Ren 2023-3-30
 }
 
 void HPM::CudaSpaceRelease(bool geom_consistency)
 {
 	cudaFree(texture_objects_cuda);
+	texture_objects_cuda = nullptr;
 	cudaFree(cameras_cuda);
+	cameras_cuda = nullptr;
 	cudaFree(plane_hypotheses_cuda);
+	plane_hypotheses_cuda = nullptr;
 	cudaFree(costs_cuda);
+	costs_cuda = nullptr;
+	cudaFree(pre_costs_cuda);
+	pre_costs_cuda = nullptr;
 	cudaFree(rand_states_cuda);
+	rand_states_cuda = nullptr;
 	cudaFree(selected_views_cuda);
+	selected_views_cuda = nullptr;
 	cudaFree(depths_cuda);
+	depths_cuda = nullptr;
+	cudaFree(confidences_cuda);
+	confidences_cuda = nullptr;
+	cudaFree(Canny_cuda);
+	Canny_cuda = nullptr;
 	cudaFree(texture_cuda);
+	texture_cuda = nullptr;
 
 	if (geom_consistency) {
 		cudaFree(texture_depths_cuda);
+		texture_depths_cuda = nullptr;
 	}
+
+	delete[] confidences_host;
+	confidences_host = nullptr;
+	delete[] texture_host;
+	texture_host = nullptr;
 }
 
 void HPM::ReleaseProblemHostMemory() {
