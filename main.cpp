@@ -776,6 +776,8 @@ void RunFusion(std::string& dense_folder, const std::vector<Problem>& problems, 
 
 	std::string ply_path = dense_folder + "/HPM_MVS_plusplus/HPM_MVS_plusplus.ply";
 	ExportPointCloud(ply_path, PointCloud);
+	std::string fused_path = dense_folder + "/HPM_MVS_plusplus/fused.ply";
+	StoreColorPlyFileBinaryPointCloud(fused_path, PointCloud);
 }
 
 void ConfidenceEvaluation(std::string& dense_folder, const std::vector<Problem>& problems, bool geom_consistency) {
