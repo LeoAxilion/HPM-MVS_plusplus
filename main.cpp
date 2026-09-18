@@ -933,15 +933,20 @@ void ConfidenceEvaluation(std::string& dense_folder, const std::vector<Problem>&
 int main(int argc, char** argv)
 {
 	if (argc < 2) {
-		std::cout << "USAGE: HPM-MVS_plusplus dense_folder true/flase(mask defualt: flase)" << std::endl;
+		std::cout << "USAGE: HPM-MVS_plusplus dense_folder [true/false(mask, default: false)] [mode: full/fuse (default: full)]" << std::endl;
 		return -1;
 	}
 
 	std::string dense_folder = argv[1];
-	std::string mask = argv[2];
+	std::string mask = (argc > 2) ? argv[2] : "false";
+	std::string mode = (argc > 3) ? argv[3] : "full";
 	bool mask_flag = false;
 	if (mask == "true") {
 		mask_flag = true;
+	}
+	bool fuse_only = (mode == "fuse");
+	if (fuse_only) {
+		std::cout << "Fuse-only mode: skip MVS pipeline, run fusion with existing files." << std::endl;
 	}
 
 	std::vector<Problem> problems;
@@ -953,6 +958,17 @@ int main(int argc, char** argv)
 
 	size_t num_images = problems.size();
 	std::cout << "There are " << num_images << " problems needed to be processed!" << std::endl;
+
+	if (fuse_only) {
+		bool geom_consistency = true;
+		if (mask_flag) {
+			RunFusion_Sky_Strict(dense_folder, problems, geom_consistency);
+		}
+		else {
+			RunFusion(dense_folder, problems, geom_consistency);
+		}
+		return 0;
+	}
 
 	int max_num_downscale = ComputeMultiScaleSettings(dense_folder, problems);
 
