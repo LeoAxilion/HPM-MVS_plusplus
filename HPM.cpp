@@ -1,3 +1,7 @@
+#include <fstream>
+#include <cmath>
+#include <algorithm>
+#include <stdexcept>
 #include "HPM.h"
 
 #include <cstdarg>
@@ -401,6 +405,42 @@ int writeNormalDmb(const std::string file_path, const cv::Mat_<cv::Vec3f> normal
 	fclose(outimage);
 	return 0;
 }
+
+// Additional COLMAP-compatible output; leave the original exporter unchanged.
+void ExportFusedPointCloud(const std::string& filename, const std::vector<PointList>& points)
+{
+    auto valid = [](const PointList& p) {
+        const double n = double(p.normal.x)*p.normal.x + double(p.normal.y)*p.normal.y + double(p.normal.z)*p.normal.z;
+        return std::isfinite(p.coord.x) && std::isfinite(p.coord.y) && std::isfinite(p.coord.z)
+            && std::isfinite(n) && n > 1e-20;
+    };
+    size_t count = 0;
+    for (const auto& p : points) if (valid(p)) ++count;
+    const std::string temporary = filename + ".tmp";
+    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+    out << "ply\nformat binary_little_endian 1.0\nelement vertex " << count
+        << "\nproperty float x\nproperty float y\nproperty float z"
+        << "\nproperty float nx\nproperty float ny\nproperty float nz"
+        << "\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n";
+    for (const auto& p : points) {
+        if (!valid(p)) continue;
+        const double length = std::sqrt(double(p.normal.x)*p.normal.x + double(p.normal.y)*p.normal.y + double(p.normal.z)*p.normal.z);
+        const float values[] = {p.coord.x, p.coord.y, p.coord.z,
+            float(p.normal.x/length), float(p.normal.y/length), float(p.normal.z/length)};
+        auto channel = [](float v) -> unsigned char {
+            return std::isfinite(v) ? static_cast<unsigned char>(std::max(0.0f, std::min(255.0f, v))) : 0;
+        };
+        const unsigned char rgb[] = {channel(p.color.z), channel(p.color.y), channel(p.color.x)};
+        out.write(reinterpret_cast<const char*>(values), sizeof(values));
+        out.write(reinterpret_cast<const char*>(rgb), sizeof(rgb));
+        if (!out) throw std::runtime_error("Failed to write " + temporary + ": check disk space");
+    }
+    out.close();
+    if (!out || std::rename(temporary.c_str(), filename.c_str()) != 0)
+        throw std::runtime_error("Failed to finish " + filename);
+    std::cout << "Saved " << count << " points with world-space unit normals to " << filename << std::endl;
+}
+
 void ExportPointCloud(const std::string& plyFilePath, const std::vector<PointList>& pc)
 {
 	std::cout << "store 3D points to ply file" << std::endl;

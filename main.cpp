@@ -623,6 +623,7 @@ void RunFusion_Sky_Strict(std::string& dense_folder, const std::vector<Problem>&
 				if (num_consistent >= view_num && (dynamic_consistency > factor * num_consistent)) {
 					PointList point3D;
 					point3D.coord = consistent_Point;
+					point3D.normal = make_float3(consistent_normal[0], consistent_normal[1], consistent_normal[2]);
 					point3D.color = make_float3(consistent_Color[0], consistent_Color[1], consistent_Color[2]);
 					
 					float3 seg_Color = make_float3(segment_Color[0], segment_Color[1], segment_Color[2]);
@@ -641,6 +642,7 @@ void RunFusion_Sky_Strict(std::string& dense_folder, const std::vector<Problem>&
 
 	std::string ply_path = dense_folder + "/HPM_MVS_plusplus/HPM_MVS_plusplus_mask.ply";
 	ExportPointCloud(ply_path, PointCloud);
+	ExportFusedPointCloud(dense_folder + "/HPM_MVS_plusplus/fused.ply", PointCloud);
 }
 
 void RunFusion(std::string& dense_folder, const std::vector<Problem>& problems, bool geom_consistency)
@@ -776,6 +778,7 @@ void RunFusion(std::string& dense_folder, const std::vector<Problem>& problems, 
 
 	std::string ply_path = dense_folder + "/HPM_MVS_plusplus/HPM_MVS_plusplus.ply";
 	ExportPointCloud(ply_path, PointCloud);
+	ExportFusedPointCloud(dense_folder + "/HPM_MVS_plusplus/fused.ply", PointCloud);
 }
 
 void ConfidenceEvaluation(std::string& dense_folder, const std::vector<Problem>& problems, bool geom_consistency) {
