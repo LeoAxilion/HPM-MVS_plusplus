@@ -936,21 +936,25 @@ void ConfidenceEvaluation(std::string& dense_folder, const std::vector<Problem>&
 int main(int argc, char** argv)
 {
 	if (argc < 2) {
-		std::cout << "USAGE: HPM-MVS_plusplus dense_folder [true/false(mask, default: false)] [mode: full/fuse (default: full)]" << std::endl;
+		std::cout << "USAGE: HPM-MVS_plusplus dense_folder [--mask] [--fusion-only/--fuse]" << std::endl;
 		return -1;
 	}
 
 	std::string dense_folder = argv[1];
-	std::string mask = (argc > 2) ? argv[2] : "false";
-	std::string mode = (argc > 3) ? argv[3] : "full";
 	bool mask_flag = false;
-	if (mask == "true") {
-		mask_flag = true;
-	}
-	bool fuse_only = (mode == "fuse");
-	if (fuse_only) {
-		std::cout << "Fuse-only mode: skip MVS pipeline, run fusion with existing files." << std::endl;
-	}
+	bool fuse_only = false;
+	int arg = 2;
+	try {
+        while (arg < argc) {
+            const std::string option(argv[arg++]);
+            if (option == "--mask") mask_flag = true;
+            else if (option == "--fusion-only" || option == "--fuse") fuse_only = true;
+            else throw std::invalid_argument("unknown or incomplete option: " + option);
+        }
+    } catch (const std::exception &e) {
+        std::cerr << e.what() << std::endl;
+        return EXIT_FAILURE;
+    }
 
 	std::vector<Problem> problems;
 	GenerateSampleList(dense_folder, problems);
@@ -963,6 +967,7 @@ int main(int argc, char** argv)
 	std::cout << "There are " << num_images << " problems needed to be processed!" << std::endl;
 
 	if (fuse_only) {
+		std::cout << "Fuse-only mode: skip MVS pipeline, run fusion with existing files." << std::endl;
 		bool geom_consistency = true;
 		if (mask_flag) {
 			RunFusion_Sky_Strict(dense_folder, problems, geom_consistency);
