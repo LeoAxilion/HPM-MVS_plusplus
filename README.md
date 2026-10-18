@@ -20,7 +20,21 @@ make
 * Test 
 ``` 
 Use script colmap2mvsnet_acm.py to convert COLMAP SfM result to MVS input   
-Run ./HPM-MVS_plusplus $data_folder true/flase(semantic segmentation masks for filtering sky area) to get reconstruction results 
+Run `./HPM-MVS_plusplus $data_folder` to get reconstruction results.
+```
+
+### Runtime options
+
+`--max-image-size N` limits the longest side of each reference/source image used by HPM-MVS++. The default is `1800`; set `N` to `0` or a negative value to use the input image resolution without a cap. For example:
+
+```
+./HPM-MVS_plusplus "$data_folder" --max-image-size 1800
+```
+
+Intermediate files are removed after successful fusion by default. Add `--show-medium-result` to keep intermediate cost, confidence, texture, triangulation, and planar-prior debug files. The per-image depth maps (`depths.dmb` and `depths_geom.dmb`) and normal maps (`normals.dmb`) are retained regardless of this option:
+
+```
+./HPM-MVS_plusplus "$data_folder" --max-image-size 1800 --show-medium-result
 ```
 
 ## Citation

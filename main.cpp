@@ -1,5 +1,8 @@
 #include "main.h"
 #include "HPM.h"
+#include <cstdio>
+#include <dirent.h>
+#include <stdexcept>
 
 void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& problems)
 {
@@ -32,11 +35,10 @@ void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& p
 	}
 }
 
-int ComputeMultiScaleSettings(const std::string& dense_folder, std::vector<Problem>& problems)
+int ComputeMultiScaleSettings(const std::string& dense_folder, std::vector<Problem>& problems, const int max_image_size)
 {
 	int max_num_downscale = -1;
 	int size_bound = 1000;
-	PatchMatchParams pmp;
 	std::string image_folder = dense_folder + std::string("/images");
 
 	size_t num_images = problems.size();
@@ -49,8 +51,8 @@ int ComputeMultiScaleSettings(const std::string& dense_folder, std::vector<Probl
 		int rows = image_uint.rows;
 		int cols = image_uint.cols;
 		int max_size = std::max(rows, cols);
-		if (max_size > pmp.max_image_size) {
-			max_size = pmp.max_image_size;
+		if (max_image_size > 0 && max_size > max_image_size) {
+			max_size = max_image_size;
 		}
 		problems[i].max_image_size = max_size;
 
@@ -70,7 +72,7 @@ int ComputeMultiScaleSettings(const std::string& dense_folder, std::vector<Probl
 	return max_num_downscale;
 }
 
-void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>& problems, const int idx, bool geom_consistency, bool prior_consistency, bool hierarchy, bool mand_consistency, int image_scale, bool multi_geometrty = false, int hpm_scale_distance = 0)
+void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>& problems, const int idx, bool geom_consistency, bool prior_consistency, bool hierarchy, bool mand_consistency, int image_scale, bool multi_geometrty = false, int hpm_scale_distance = 0, bool show_medium_result = false)
 {
 	const Problem problem = problems[idx];
 	std::cout << "Processing image " << std::setw(8) << std::setfill('0') << problem.ref_image_id << "..." << std::endl;
@@ -195,8 +197,10 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 					cv::line(srcImage, triangle.pt2, triangle.pt3, cv::Scalar(0, 0, 255));
 				}
 			}
-			std::string triangulation_path = result_folder + "/triangulation0.png";
-			cv::imwrite(triangulation_path, srcImage);
+			if (show_medium_result) {
+				std::string triangulation_path = result_folder + "/triangulation0.png";
+				cv::imwrite(triangulation_path, srcImage);
+			}
 
 			refImage.release();
 			mbgr.clear();
@@ -244,8 +248,10 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 					}
 				}
 			}
-			std::string prior_path = result_folder + "/depths_prior0.dmb";
-			writeDepthDmb(prior_path, priordepths);
+			if (show_medium_result) {
+				std::string prior_path = result_folder + "/depths_prior0.dmb";
+				writeDepthDmb(prior_path, priordepths);
+			}
 			priordepths.release();
 
 			hpm.CudaPlanarPriorInitialization(planeParams_tri, mask_tri);
@@ -301,8 +307,10 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 					cv::line(srcImage, triangle.pt2, triangle.pt3, cv::Scalar(0, 0, 255));
 				}
 			}
-			std::string triangulation_path = result_folder + "/triangulation" + std::to_string(hpm_scale_distance) + ".png";
-			cv::imwrite(triangulation_path, srcImage);
+			if (show_medium_result) {
+				std::string triangulation_path = result_folder + "/triangulation" + std::to_string(hpm_scale_distance) + ".png";
+				cv::imwrite(triangulation_path, srcImage);
+			}
 
 			std::vector<float4>planeParams_tri;
 			cv::Mat_<float> mask_tri = cv::Mat::zeros(hpm_height, hpm_width, CV_32FC1);
@@ -352,8 +360,10 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 				}
 			}
 
-			std::string depths_prior_path = result_folder + "/depths_prior" + std::to_string(hpm_scale_distance) + ".dmb";
-			writeDepthDmb(depths_prior_path, priordepths);
+			if (show_medium_result) {
+				std::string depths_prior_path = result_folder + "/depths_prior" + std::to_string(hpm_scale_distance) + ".dmb";
+				writeDepthDmb(depths_prior_path, priordepths);
+			}
 
 			std::stringstream image_path;
 			image_path << dense_folder << "/images" << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << ".jpg";
@@ -390,8 +400,10 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 				}
 			}
 
-			depths_prior_path = result_folder + "/depths_prior" + std::to_string(hpm_scale_distance) + "_upsample.dmb";
-			writeDepthDmb(depths_prior_path, priordepths_upsample);
+			if (show_medium_result) {
+				const std::string depths_prior_path = result_folder + "/depths_prior" + std::to_string(hpm_scale_distance) + "_upsample.dmb";
+				writeDepthDmb(depths_prior_path, priordepths_upsample);
+			}
 			hpm.ReloadPlanarPriorInitialization(mask_tri_new, prior_planeParams);
 			hpm.CudaHypothesesReload(depths, costs, normals);
 			hpm.RunPatchMatch();
@@ -933,22 +945,68 @@ void ConfidenceEvaluation(std::string& dense_folder, const std::vector<Problem>&
 	std::cout << "Hypotheses Confidence Evaluating Over..." << std::endl;
 }
 
+void RemoveIntermediateResults(const std::string& dense_folder, const std::vector<Problem>& problems)
+{
+	size_t removed_files = 0;
+	for (const Problem& problem : problems) {
+		std::stringstream result_path;
+		result_path << dense_folder << "/HPM_MVS_plusplus/2333_"
+			<< std::setw(8) << std::setfill('0') << problem.ref_image_id;
+		DIR* dir = opendir(result_path.str().c_str());
+		if (dir == NULL) continue;
+
+		struct dirent* entry;
+		while ((entry = readdir(dir)) != NULL) {
+			const std::string name(entry->d_name);
+			const bool is_texture = name.compare(0, 7, "texture") == 0 &&
+				name.size() >= 4 && name.compare(name.size() - 4, 4, ".dmb") == 0;
+			const bool is_triangulation = name.compare(0, 13, "triangulation") == 0 &&
+				name.size() >= 4 && name.compare(name.size() - 4, 4, ".png") == 0;
+			const bool is_prior_depth = name.compare(0, 12, "depths_prior") == 0 &&
+				name.size() >= 4 && name.compare(name.size() - 4, 4, ".dmb") == 0;
+			const bool is_intermediate = name == "costs.dmb" || name == "confidence.dmb" ||
+				is_texture || is_triangulation || is_prior_depth;
+			if (is_intermediate) {
+				const std::string file_path = result_path.str() + "/" + name;
+				if (::remove(file_path.c_str()) == 0) ++removed_files;
+			}
+		}
+		closedir(dir);
+	}
+	std::cout << "Removed " << removed_files
+		<< " intermediate files; depth and normal maps were preserved." << std::endl;
+}
+
 int main(int argc, char** argv)
 {
 	if (argc < 2) {
-		std::cout << "USAGE: HPM-MVS_plusplus dense_folder [--mask] [--fusion-only/--fuse]" << std::endl;
+		std::cout << "USAGE: HPM-MVS_plusplus dense_folder [--max-image-size N] "
+			"[--show-medium-result] [--mask] [--fusion-only/--fuse]\n"
+			"  --max-image-size N: cap the longest image side (default 1800; N <= 0 keeps original resolution)\n"
+			"  --show-medium-result: keep intermediate cost, confidence, texture, triangulation, and prior debug files; depth/normal maps are always kept."
+			<< std::endl;
 		return -1;
 	}
 
 	std::string dense_folder = argv[1];
 	bool mask_flag = false;
 	bool fuse_only = false;
+	bool show_medium_result = false;
+	int max_image_size = 1800;
 	int arg = 2;
 	try {
         while (arg < argc) {
             const std::string option(argv[arg++]);
             if (option == "--mask") mask_flag = true;
             else if (option == "--fusion-only" || option == "--fuse") fuse_only = true;
+			else if (option == "--show-medium-result") show_medium_result = true;
+			else if (option == "--max-image-size" && arg < argc) {
+				const std::string value(argv[arg++]);
+				size_t parsed = 0;
+				max_image_size = std::stoi(value, &parsed);
+				if (parsed != value.size())
+					throw std::invalid_argument("--max-image-size must be an integer (N <= 0 = original resolution)");
+			}
             else throw std::invalid_argument("unknown or incomplete option: " + option);
         }
     } catch (const std::exception &e) {
@@ -958,6 +1016,9 @@ int main(int argc, char** argv)
 
 	std::vector<Problem> problems;
 	GenerateSampleList(dense_folder, problems);
+	std::cout << "Maximum image size: " << max_image_size
+		<< (max_image_size == 0 ? " (original resolution)" : " pixels on the longest side") << std::endl;
+	std::cout << "Keep intermediate results: " << (show_medium_result ? "yes" : "no (removed after fusion)") << std::endl;
 
 	std::string output_folder = dense_folder + std::string("/HPM_MVS_plusplus");
 	// mkdir(output_folder.c_str());	//windows
@@ -978,7 +1039,7 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
-	int max_num_downscale = ComputeMultiScaleSettings(dense_folder, problems);
+	int max_num_downscale = ComputeMultiScaleSettings(dense_folder, problems, max_image_size);
 
 	int flag = 0;
 	int geom_iterations;
@@ -1004,7 +1065,7 @@ int main(int argc, char** argv)
 			geom_consistency = false;
 			prior_consistency = false;
 			for (size_t i = 0; i < num_images; ++i) {
-				ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale);
+				ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, false, 0, show_medium_result);
 			}
 			prior_consistency = true;
 			geom_consistency = false;
@@ -1013,7 +1074,7 @@ int main(int argc, char** argv)
 				for (size_t i = 0; i < num_images; ++i) {
 					std::cout << "HPM Scale: " << hpm_scale << std::endl;
 					int hpm_scale_distance = hpm_scale - problems[i].num_downscale - 1;
-					ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, multi_geometry, hpm_scale_distance);
+					ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, multi_geometry, hpm_scale_distance, show_medium_result);
 				}
 			}
 
@@ -1038,7 +1099,7 @@ int main(int argc, char** argv)
 				}
 
 				for (size_t i = 0; i < num_images; ++i) {
-					ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, multi_geometry);
+					ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, multi_geometry, 0, show_medium_result);
 				}
 			}
 		}
@@ -1052,7 +1113,7 @@ int main(int argc, char** argv)
 			geom_consistency = false;
 			prior_consistency = false;
 			for (size_t i = 0; i < num_images; ++i) {
-				ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale);
+				ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, false, 0, show_medium_result);
 			}
 			hierarchy = false;
 			prior_consistency = true;
@@ -1063,7 +1124,7 @@ int main(int argc, char** argv)
 				for (size_t i = 0; i < num_images; ++i) {
 					std::cout << "HPM Scale: " << hpm_scale << std::endl;
 					int hpm_scale_distance = hpm_scale - problems[i].num_downscale - 1;
-					ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, multi_geometry, hpm_scale_distance);
+					ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, multi_geometry, hpm_scale_distance, show_medium_result);
 				}
 			}
 
@@ -1088,7 +1149,7 @@ int main(int argc, char** argv)
 				}
 
 				for (size_t i = 0; i < num_images; ++i) {
-					ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, multi_geometry);
+					ProcessProblem(dense_folder, problems, i, geom_consistency, prior_consistency, hierarchy, mand_consistency, max_num_downscale, multi_geometry, 0, show_medium_result);
 				}
 			}
 		}
@@ -1101,6 +1162,9 @@ int main(int argc, char** argv)
 	}
 	else {
 		RunFusion(dense_folder, problems, geom_consistency);
+	}
+	if (!show_medium_result) {
+		RemoveIntermediateResults(dense_folder, problems);
 	}
 	return 0;
 }
