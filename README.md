@@ -25,16 +25,16 @@ Run `./HPM-MVS_plusplus $data_folder` to get reconstruction results.
 
 ### Runtime options
 
-`--max-image-size N` limits the longest side of each reference/source image used by HPM-MVS++. The default is `1800`; set `N` to `0` or a negative value to use the input image resolution without a cap. For example:
+`--initial-image-scale N` sets the initial downscale divisor for HPM-MVS++ images. The default is `4`: both width and height are scaled to one quarter of their input dimensions before the internal pyramid processing. Use `1` to keep the original resolution. For example:
 
 ```
-./HPM-MVS_plusplus "$data_folder" --max-image-size 1800
+./HPM-MVS_plusplus "$data_folder" --initial-image-scale 4
 ```
 
 Intermediate files are removed after successful fusion by default. Add `--show-medium-result` to keep intermediate cost, confidence, texture, triangulation, and planar-prior debug files. The per-image depth maps (`depths.dmb` and `depths_geom.dmb`) and normal maps (`normals.dmb`) are retained regardless of this option:
 
 ```
-./HPM-MVS_plusplus "$data_folder" --max-image-size 1800 --show-medium-result
+./HPM-MVS_plusplus "$data_folder" --initial-image-scale 4 --show-medium-result
 ```
 
 ## Citation

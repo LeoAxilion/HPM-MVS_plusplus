@@ -680,18 +680,18 @@ void HPM::InuputInitialization(const std::string& dense_folder, const std::vecto
 	}
 
 	// Scale cameras and images
-	int max_image_size = problems[idx].cur_image_size;
+	int target_max_side = problems[idx].cur_max_side;
 	for (size_t i = 0; i < images.size(); ++i) {
 		if (i > 0) {
-			max_image_size = problems[problem.src_image_ids[i - 1]].cur_image_size;
+			target_max_side = problems[problem.src_image_ids[i - 1]].cur_max_side;
 		}
 
-		if (images[i].cols <= max_image_size && images[i].rows <= max_image_size) {
+		if (images[i].cols <= target_max_side && images[i].rows <= target_max_side) {
 			continue;
 		}
 
-		const float factor_x = static_cast<float>(max_image_size) / images[i].cols;
-		const float factor_y = static_cast<float>(max_image_size) / images[i].rows;
+		const float factor_x = static_cast<float>(target_max_side) / images[i].cols;
+		const float factor_y = static_cast<float>(target_max_side) / images[i].rows;
 		const float factor = std::min(factor_x, factor_y);
 
 		const int new_cols = std::round(images[i].cols * factor);

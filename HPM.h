@@ -33,7 +33,6 @@ struct PatchMatchParams {
     int max_iterations = 3;
     int patch_size = 11;
     int num_images = 5;
-    int max_image_size=3200;
     int radius_increment = 2;
     float sigma_spatial = 5.0f;
     float sigma_color = 3.0f;

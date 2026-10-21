@@ -35,7 +35,7 @@ void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& p
 	}
 }
 
-int ComputeMultiScaleSettings(const std::string& dense_folder, std::vector<Problem>& problems, const int max_image_size)
+int ComputeMultiScaleSettings(const std::string& dense_folder, std::vector<Problem>& problems, const int initial_image_scale)
 {
 	int max_num_downscale = -1;
 	int size_bound = 1000;
@@ -48,17 +48,15 @@ int ComputeMultiScaleSettings(const std::string& dense_folder, std::vector<Probl
 		image_path << image_folder << "/" << std::setw(8) << std::setfill('0') << problems[i].ref_image_id << ".jpg";
 		cv::Mat_<uint8_t> image_uint = cv::imread(image_path.str(), cv::IMREAD_GRAYSCALE);
 
-		int rows = image_uint.rows;
-		int cols = image_uint.cols;
-		int max_size = std::max(rows, cols);
-		if (max_image_size > 0 && max_size > max_image_size) {
-			max_size = max_image_size;
-		}
-		problems[i].max_image_size = max_size;
+		const int original_max_side = std::max(image_uint.rows, image_uint.cols);
+		const int initial_max_side = std::max(
+			1, (original_max_side + initial_image_scale / 2) / initial_image_scale);
+		problems[i].initial_max_side = initial_max_side;
 
 		int k = 0;
-		while (max_size > size_bound) {
-			max_size /= 2;
+		int pyramid_max_side = initial_max_side;
+		while (pyramid_max_side > size_bound) {
+			pyramid_max_side /= 2;
 			k++;
 		}
 
@@ -980,9 +978,9 @@ void RemoveIntermediateResults(const std::string& dense_folder, const std::vecto
 int main(int argc, char** argv)
 {
 	if (argc < 2) {
-		std::cout << "USAGE: HPM-MVS_plusplus dense_folder [--max-image-size N] "
+		std::cout << "USAGE: HPM-MVS_plusplus dense_folder [--initial-image-scale N] "
 			"[--show-medium-result] [--mask] [--fusion-only/--fuse]\n"
-			"  --max-image-size N: cap the longest image side (default 1800; N <= 0 keeps original resolution)\n"
+			"  --initial-image-scale N: downscale width and height by N before pyramid processing (default 4; N=4 means 1/4 resolution)\n"
 			"  --show-medium-result: keep intermediate cost, confidence, texture, triangulation, and prior debug files; depth/normal maps are always kept."
 			<< std::endl;
 		return -1;
@@ -992,7 +990,7 @@ int main(int argc, char** argv)
 	bool mask_flag = false;
 	bool fuse_only = false;
 	bool show_medium_result = false;
-	int max_image_size = 1800;
+	int initial_image_scale = 4;
 	int arg = 2;
 	try {
         while (arg < argc) {
@@ -1000,12 +998,14 @@ int main(int argc, char** argv)
             if (option == "--mask") mask_flag = true;
             else if (option == "--fusion-only" || option == "--fuse") fuse_only = true;
 			else if (option == "--show-medium-result") show_medium_result = true;
-			else if (option == "--max-image-size" && arg < argc) {
+			else if (option == "--initial-image-scale" && arg < argc) {
 				const std::string value(argv[arg++]);
 				size_t parsed = 0;
-				max_image_size = std::stoi(value, &parsed);
+				initial_image_scale = std::stoi(value, &parsed);
 				if (parsed != value.size())
-					throw std::invalid_argument("--max-image-size must be an integer (N <= 0 = original resolution)");
+					throw std::invalid_argument("--initial-image-scale must be a positive integer (1 = original resolution)");
+				if (initial_image_scale < 1)
+					throw std::invalid_argument("--initial-image-scale must be at least 1 (1 = original resolution)");
 			}
             else throw std::invalid_argument("unknown or incomplete option: " + option);
         }
@@ -1016,8 +1016,8 @@ int main(int argc, char** argv)
 
 	std::vector<Problem> problems;
 	GenerateSampleList(dense_folder, problems);
-	std::cout << "Maximum image size: " << max_image_size
-		<< (max_image_size == 0 ? " (original resolution)" : " pixels on the longest side") << std::endl;
+	std::cout << "Initial image scale: 1/" << initial_image_scale
+		<< " (width and height are each scaled by 1/" << initial_image_scale << ")" << std::endl;
 	std::cout << "Keep intermediate results: " << (show_medium_result ? "yes" : "no (removed after fusion)") << std::endl;
 
 	std::string output_folder = dense_folder + std::string("/HPM_MVS_plusplus");
@@ -1039,7 +1039,7 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
-	int max_num_downscale = ComputeMultiScaleSettings(dense_folder, problems, max_image_size);
+	int max_num_downscale = ComputeMultiScaleSettings(dense_folder, problems, initial_image_scale);
 
 	int flag = 0;
 	int geom_iterations;
@@ -1055,7 +1055,7 @@ int main(int argc, char** argv)
 
 		for (size_t i = 0; i < num_images; ++i) {
 			if (problems[i].num_downscale >= 0) {
-				problems[i].cur_image_size = problems[i].max_image_size / pow(2, problems[i].num_downscale);
+				problems[i].cur_max_side = problems[i].initial_max_side / pow(2, problems[i].num_downscale);
 				problems[i].num_downscale--;
 			}
 		}
@@ -1105,7 +1105,7 @@ int main(int argc, char** argv)
 		}
 		else {
 			for (size_t i = 0; i < num_images; ++i) {
-				JointBilateralUpsampling(dense_folder, problems[i], problems[i].cur_image_size);
+				JointBilateralUpsampling(dense_folder, problems[i], problems[i].cur_max_side);
 			}
 
 			hierarchy = true;
