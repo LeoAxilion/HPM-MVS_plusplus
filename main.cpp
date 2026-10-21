@@ -3,6 +3,22 @@
 #include <cstdio>
 #include <dirent.h>
 #include <stdexcept>
+#include <chrono>
+
+class ExecutionTimer {
+public:
+	ExecutionTimer() : start_(std::chrono::steady_clock::now()) {}
+
+	~ExecutionTimer() {
+		const std::chrono::duration<double> elapsed =
+			std::chrono::steady_clock::now() - start_;
+		std::cout << "Total execution time: " << std::fixed << std::setprecision(2)
+			<< elapsed.count() << " seconds" << std::endl;
+	}
+
+private:
+	std::chrono::steady_clock::time_point start_;
+};
 
 void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& problems)
 {
@@ -977,6 +993,7 @@ void RemoveIntermediateResults(const std::string& dense_folder, const std::vecto
 
 int main(int argc, char** argv)
 {
+	const ExecutionTimer execution_timer;
 	if (argc < 2) {
 		std::cout << "USAGE: HPM-MVS_plusplus dense_folder [--initial-image-scale N] "
 			"[--show-medium-result] [--mask] [--fusion-only/--fuse]\n"
