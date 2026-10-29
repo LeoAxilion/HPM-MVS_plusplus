@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include "iomanip"
 
 // #include<direct.h>  //windows mkdir
@@ -52,7 +54,35 @@ struct Problem {
     int num_downscale = 0;
     // Longest image side for the current pyramid level.
     int cur_max_side = 0;
+    std::shared_ptr<class ScaledImageCache> scaled_image_cache;
 };
+
+// Per-ProcessProblem cache for prepared, layer-scaled source images.
+class ScaledImageCache {
+public:
+    explicit ScaledImageCache(size_t max_images);
+    void Retain(const std::vector<int>& image_ids);
+    void SetOriginalSize(int image_id, const cv::Size& size);
+    cv::Size OriginalSize(int image_id) const;
+    cv::Mat Get(int image_id, const std::string& scaled_image_path);
+    void Clear();
+    void ResetStats();
+    size_t CacheHits() const { return cache_hits; }
+    size_t CacheMisses() const { return cache_misses; }
+    double DiskReadSeconds() const { return disk_read_seconds; }
+
+private:
+    size_t capacity;
+    size_t cache_hits = 0;
+    size_t cache_misses = 0;
+    double disk_read_seconds = 0.0;
+    std::unordered_map<int, cv::Mat> images;
+    std::unordered_map<int, cv::Size> original_sizes;
+};
+
+std::string ScaledImagePath(const std::string& dense_folder, int image_id,
+    int target_max_side);
+int PyramidMaxSideForImage(const std::vector<Problem>& problems, int image_id);
 
 struct Triangle {
     cv::Point pt1, pt2, pt3;

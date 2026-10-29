@@ -646,70 +646,40 @@ void HPM::InuputInitialization(const std::string& dense_folder, const std::vecto
 	images.clear();
 	cameras.clear();
 	const Problem problem = problems[idx];
-
-	std::string image_folder = dense_folder + std::string("/images");
+	if (!problem.scaled_image_cache) {
+		throw std::runtime_error("ProcessProblem has no prepared scaled-image cache");
+	}
 	std::string cam_folder = dense_folder + std::string("/cams");
 
-	std::stringstream image_path;
-	image_path << image_folder << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << ".jpg";
-	cv::Mat_<uint8_t> image_uint = cv::imread(image_path.str(), cv::IMREAD_GRAYSCALE);
-	cv::Mat image_float;
-	image_uint.convertTo(image_float, CV_32FC1);
-	images.push_back(image_float);
-	std::stringstream cam_path;
-	cam_path << cam_folder << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << "_cam.txt";
-	Camera camera = ReadCamera(cam_path.str());
-	camera.height = image_float.rows;
-	camera.width = image_float.cols;
-	cameras.push_back(camera);
-
-	size_t num_src_images = problem.src_image_ids.size();
-	for (size_t i = 0; i < num_src_images; ++i) {
-		std::stringstream image_path;
-		image_path << image_folder << "/" << std::setw(8) << std::setfill('0') << problem.src_image_ids[i] << ".jpg";
-		cv::Mat_<uint8_t> image_uint = cv::imread(image_path.str(), cv::IMREAD_GRAYSCALE);
-		cv::Mat image_float;
-		image_uint.convertTo(image_float, CV_32FC1);
+	auto append_prepared_view = [&](int image_id) {
+		const int target_max_side = PyramidMaxSideForImage(problems, image_id);
+		const std::string scaled_path = ScaledImagePath(
+			dense_folder, image_id, target_max_side);
+		cv::Mat color = problem.scaled_image_cache->Get(image_id, scaled_path);
+		cv::Mat gray, image_float;
+		cv::cvtColor(color, gray, cv::COLOR_BGR2GRAY);
+		gray.convertTo(image_float, CV_32FC1);
 		images.push_back(image_float);
+
 		std::stringstream cam_path;
-		cam_path << cam_folder << "/" << std::setw(8) << std::setfill('0') << problem.src_image_ids[i] << "_cam.txt";
+		cam_path << cam_folder << "/" << std::setw(8) << std::setfill('0')
+			<< image_id << "_cam.txt";
 		Camera camera = ReadCamera(cam_path.str());
-		camera.height = image_float.rows;
-		camera.width = image_float.cols;
+		const cv::Size original_size = problem.scaled_image_cache->OriginalSize(image_id);
+		const float scale_x = color.cols / static_cast<float>(original_size.width);
+		const float scale_y = color.rows / static_cast<float>(original_size.height);
+		camera.K[0] *= scale_x;
+		camera.K[2] *= scale_x;
+		camera.K[4] *= scale_y;
+		camera.K[5] *= scale_y;
+		camera.height = color.rows;
+		camera.width = color.cols;
 		cameras.push_back(camera);
-	}
+	};
 
-	// Scale cameras and images
-	int target_max_side = problems[idx].cur_max_side;
-	for (size_t i = 0; i < images.size(); ++i) {
-		if (i > 0) {
-			target_max_side = problems[problem.src_image_ids[i - 1]].cur_max_side;
-		}
-
-		if (images[i].cols <= target_max_side && images[i].rows <= target_max_side) {
-			continue;
-		}
-
-		const float factor_x = static_cast<float>(target_max_side) / images[i].cols;
-		const float factor_y = static_cast<float>(target_max_side) / images[i].rows;
-		const float factor = std::min(factor_x, factor_y);
-
-		const int new_cols = std::round(images[i].cols * factor);
-		const int new_rows = std::round(images[i].rows * factor);
-
-		const float scale_x = new_cols / static_cast<float>(images[i].cols);
-		const float scale_y = new_rows / static_cast<float>(images[i].rows);
-
-		cv::Mat_<float> scaled_image_float;
-		cv::resize(images[i], scaled_image_float, cv::Size(new_cols, new_rows), 0, 0, cv::INTER_LINEAR);
-		images[i] = scaled_image_float.clone();
-
-		cameras[i].K[0] *= scale_x;
-		cameras[i].K[2] *= scale_x;
-		cameras[i].K[4] *= scale_y;
-		cameras[i].K[5] *= scale_y;
-		cameras[i].height = scaled_image_float.rows;
-		cameras[i].width = scaled_image_float.cols;
+	append_prepared_view(problem.ref_image_id);
+	for (const int image_id : problem.src_image_ids) {
+		append_prepared_view(image_id);
 	}
 
 	params.depth_min = cameras[0].depth_min * 0.6f;

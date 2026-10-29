@@ -4,6 +4,8 @@
 #include <dirent.h>
 #include <stdexcept>
 #include <chrono>
+#include <cerrno>
+#include <unordered_set>
 
 class ExecutionTimer {
 public:
@@ -19,6 +21,152 @@ public:
 private:
 	std::chrono::steady_clock::time_point start_;
 };
+
+ScaledImageCache::ScaledImageCache(size_t max_images) : capacity(max_images) {
+	if (capacity == 0) throw std::invalid_argument("scaled-image cache capacity must be positive");
+}
+
+void ScaledImageCache::Retain(const std::vector<int>& image_ids) {
+	std::unordered_set<int> keep(image_ids.begin(), image_ids.end());
+	if (keep.size() > capacity) {
+		throw std::runtime_error("ProcessProblem image count exceeds scaled-image cache capacity");
+	}
+	for (auto it = images.begin(); it != images.end();) {
+		if (keep.find(it->first) == keep.end()) it = images.erase(it);
+		else ++it;
+	}
+}
+
+void ScaledImageCache::SetOriginalSize(int image_id, const cv::Size& size) {
+	original_sizes[image_id] = size;
+}
+
+cv::Size ScaledImageCache::OriginalSize(int image_id) const {
+	auto it = original_sizes.find(image_id);
+	if (it == original_sizes.end()) {
+		throw std::runtime_error("Original dimensions are missing for scaled image " +
+			std::to_string(image_id));
+	}
+	return it->second;
+}
+
+cv::Mat ScaledImageCache::Get(int image_id, const std::string& scaled_image_path) {
+	auto it = images.find(image_id);
+	if (it != images.end()) {
+		++cache_hits;
+		return it->second;
+	}
+	if (images.size() >= capacity) {
+		throw std::runtime_error("Scaled-image cache is full; Retain() must run before loading a view");
+	}
+	const auto started = std::chrono::steady_clock::now();
+	cv::Mat image = cv::imread(scaled_image_path, cv::IMREAD_COLOR);
+	if (image.empty()) {
+		throw std::runtime_error("Cannot read prepared scaled image: " + scaled_image_path);
+	}
+	disk_read_seconds += std::chrono::duration<double>(
+		std::chrono::steady_clock::now() - started).count();
+	++cache_misses;
+	images.emplace(image_id, image);
+	return image;
+}
+
+void ScaledImageCache::Clear() {
+	images.clear();
+}
+
+void ScaledImageCache::ResetStats() {
+	cache_hits = 0;
+	cache_misses = 0;
+	disk_read_seconds = 0.0;
+}
+
+std::string ScaledImagePath(const std::string& dense_folder, int image_id,
+	int target_max_side) {
+	std::stringstream image_path;
+	image_path << dense_folder << "/HPM_MVS_plusplus/2333_" << std::setw(8)
+		<< std::setfill('0') << image_id << "/scaled_image_maxside"
+		<< target_max_side << ".png";
+	return image_path.str();
+}
+
+int PyramidMaxSideForImage(const std::vector<Problem>& problems, int image_id) {
+	for (const Problem& problem : problems) {
+		if (problem.ref_image_id == image_id) return problem.cur_max_side;
+	}
+	throw std::runtime_error("No pyramid scale found for source image " +
+		std::to_string(image_id));
+}
+
+static void EnsureDirectory(const std::string& path) {
+	if (mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
+		throw std::runtime_error("Cannot create directory: " + path);
+	}
+}
+
+std::vector<std::string> PrepareScaleImages(const std::string& dense_folder,
+	const std::vector<Problem>& problems, ScaledImageCache& cache) {
+	std::unordered_set<int> image_ids;
+	for (const Problem& problem : problems) {
+		image_ids.insert(problem.ref_image_id);
+		image_ids.insert(problem.src_image_ids.begin(), problem.src_image_ids.end());
+	}
+	std::vector<int> ordered_ids(image_ids.begin(), image_ids.end());
+	std::sort(ordered_ids.begin(), ordered_ids.end());
+	std::vector<std::string> files;
+	files.reserve(ordered_ids.size());
+	const std::string image_folder = dense_folder + "/images";
+	const auto started = std::chrono::steady_clock::now();
+	for (size_t i = 0; i < ordered_ids.size(); ++i) {
+		const int image_id = ordered_ids[i];
+		std::stringstream image_path;
+		image_path << image_folder << "/" << std::setw(8) << std::setfill('0')
+			<< image_id << ".jpg";
+		cv::Mat image = cv::imread(image_path.str(), cv::IMREAD_COLOR);
+		if (image.empty()) throw std::runtime_error("Cannot read image: " + image_path.str());
+		const cv::Size original_size = image.size();
+		const int target_max_side = PyramidMaxSideForImage(problems, image_id);
+		cache.SetOriginalSize(image_id, original_size);
+		if (std::max(image.cols, image.rows) > target_max_side) {
+			const float factor = std::min(
+				static_cast<float>(target_max_side) / image.cols,
+				static_cast<float>(target_max_side) / image.rows);
+			const int new_cols = std::max(1, static_cast<int>(std::round(image.cols * factor)));
+			const int new_rows = std::max(1, static_cast<int>(std::round(image.rows * factor)));
+			cv::Mat scaled;
+			cv::resize(image, scaled, cv::Size(new_cols, new_rows), 0, 0, cv::INTER_LINEAR);
+			image = scaled;
+		}
+		std::stringstream result_folder_stream;
+		result_folder_stream << dense_folder << "/HPM_MVS_plusplus/2333_"
+			<< std::setw(8) << std::setfill('0') << image_id;
+		const std::string result_folder = result_folder_stream.str();
+		EnsureDirectory(result_folder);
+		const std::string scaled_path = ScaledImagePath(
+			dense_folder, image_id, target_max_side);
+		if (!cv::imwrite(scaled_path, image,
+			std::vector<int>{cv::IMWRITE_PNG_COMPRESSION, 1})) {
+			throw std::runtime_error("Cannot write prepared scaled image: " + scaled_path);
+		}
+		files.push_back(scaled_path);
+		if ((i + 1) % 20 == 0 || i + 1 == ordered_ids.size()) {
+			std::cout << "Prepared scaled images " << i + 1 << "/" << ordered_ids.size()
+				<< " for current pyramid layer." << std::endl;
+		}
+	}
+	std::cout << "Prepared " << files.size() << " scaled images in "
+		<< std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+		<< " s." << std::endl;
+	return files;
+}
+
+void RemoveScaleImageFiles(const std::vector<std::string>& files) {
+	size_t removed = 0;
+	for (const std::string& file : files) {
+		if (std::remove(file.c_str()) == 0) ++removed;
+	}
+	std::cout << "Removed " << removed << " temporary scaled images." << std::endl;
+}
 
 void GenerateSampleList(const std::string& dense_folder, std::vector<Problem>& problems)
 {
@@ -90,6 +238,15 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 {
 	const Problem problem = problems[idx];
 	std::cout << "Processing image " << std::setw(8) << std::setfill('0') << problem.ref_image_id << "..." << std::endl;
+	if (!problem.scaled_image_cache) {
+		throw std::runtime_error("ProcessProblem is missing its scaled-image cache");
+	}
+	std::vector<int> active_image_ids;
+	active_image_ids.reserve(problem.src_image_ids.size() + 1);
+	active_image_ids.push_back(problem.ref_image_id);
+	active_image_ids.insert(active_image_ids.end(), problem.src_image_ids.begin(),
+		problem.src_image_ids.end());
+	problem.scaled_image_cache->Retain(active_image_ids);
 	cudaSetDevice(0);
 	std::stringstream result_path;
 	result_path << dense_folder << "/HPM_MVS_plusplus" << "/2333_" << std::setw(8) << std::setfill('0') << problem.ref_image_id;
@@ -118,16 +275,19 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 
 	hpm.SetMandConsistencyParams(mand_consistency);
 
-	std::stringstream canny_image_path;
-	cv::Mat Image_grey;
+	cv::Mat Image_scaled_color;
 	cv::Mat Canny_edge;
-	std::string image_folder = dense_folder + std::string("/images");
-	canny_image_path << image_folder << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << ".jpg";
-	cv::resize(cv::imread(canny_image_path.str(), 1), Image_grey, cv::Size(width, height), 0, 0, cv::INTER_LINEAR);
-	cv::Canny(Image_grey, Canny_edge, 50, 150);
+	const std::string scaled_ref_path = ScaledImagePath(
+		dense_folder, problem.ref_image_id, problem.cur_max_side);
+	Image_scaled_color = problem.scaled_image_cache->Get(
+		problem.ref_image_id, scaled_ref_path);
+	if (Image_scaled_color.cols != width || Image_scaled_color.rows != height) {
+		throw std::runtime_error("Prepared reference image size does not match HPM camera size");
+	}
+	cv::Canny(Image_scaled_color, Canny_edge, 50, 150);
 	std::cout << "Get Canny egdes down!" << std::endl;
 	hpm.CudaCannyInitialization(Canny_edge);
-	Image_grey.release();
+	Image_scaled_color.release();
 	Canny_edge.release();
 
 	if (mand_consistency || prior_consistency) {
@@ -379,12 +539,7 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 				writeDepthDmb(depths_prior_path, priordepths);
 			}
 
-			std::stringstream image_path;
-			image_path << dense_folder << "/images" << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << ".jpg";
-			cv::Mat_<uint8_t> image_uint;
-			cv::resize(cv::imread(image_path.str(), cv::IMREAD_GRAYSCALE), image_uint, cv::Size(width, height), 0, 0, cv::INTER_LINEAR);
-			cv::Mat image_float;
-			image_uint.convertTo(image_float, CV_32FC1);
+			cv::Mat_<float> image_float = hpm.GetReferenceImage();
 			cv::Mat_<float>priordepths_upsample = cv::Mat::zeros(height, width, CV_32FC1);
 			cv::Mat_ < cv::Vec3f >priornormals_upsample = cv::Mat::zeros(height, width, CV_32FC3);
 			std::cout << "Running JBU..." << std::endl;
@@ -434,7 +589,6 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 			confidences_downsample.release();
 			priordepths.release();
 			priornormals.release();
-			image_uint.release();
 			image_float.release();
 			priordepths_upsample.release();
 			priornormals_upsample.release();
@@ -479,7 +633,8 @@ void ProcessProblem(const std::string& dense_folder, const std::vector<Problem>&
 	std::cout << "Processing image " << std::setw(8) << std::setfill('0') << problem.ref_image_id << " done!" << std::endl;
 }
 
-void JointBilateralUpsampling(const std::string& dense_folder, const Problem& problem, int acmmp_size)
+void JointBilateralUpsampling(const std::string& dense_folder, const Problem& problem,
+	int acmmp_size, ScaledImageCache& image_cache)
 {
 	std::stringstream result_path;
 	result_path << dense_folder << "/HPM_MVS_plusplus" << "/2333_" << std::setw(8) << std::setfill('0') << problem.ref_image_id;
@@ -488,20 +643,14 @@ void JointBilateralUpsampling(const std::string& dense_folder, const Problem& pr
 	cv::Mat_<float> ref_depth;
 	readDepthDmb(depth_path, ref_depth);
 
-	std::string image_folder = dense_folder + std::string("/images");
-	std::stringstream image_path;
-	image_path << image_folder << "/" << std::setw(8) << std::setfill('0') << problem.ref_image_id << ".jpg";
-	cv::Mat_<uint8_t> image_uint = cv::imread(image_path.str(), cv::IMREAD_GRAYSCALE);
-	cv::Mat image_float;
-	image_uint.convertTo(image_float, CV_32FC1);
-	const float factor_x = static_cast<float>(acmmp_size) / image_float.cols;
-	const float factor_y = static_cast<float>(acmmp_size) / image_float.rows;
-	const float factor = std::min(factor_x, factor_y);
-
-	const int new_cols = std::round(image_float.cols * factor);
-	const int new_rows = std::round(image_float.rows * factor);
-	cv::Mat scaled_image_float;
-	cv::resize(image_float, scaled_image_float, cv::Size(new_cols, new_rows), 0, 0, cv::INTER_LINEAR);
+	std::vector<int> active_image_ids(1, problem.ref_image_id);
+	image_cache.Retain(active_image_ids);
+	const std::string scaled_path = ScaledImagePath(
+		dense_folder, problem.ref_image_id, acmmp_size);
+	cv::Mat scaled_color = image_cache.Get(problem.ref_image_id, scaled_path);
+	cv::Mat scaled_gray, scaled_image_float;
+	cv::cvtColor(scaled_color, scaled_gray, cv::COLOR_BGR2GRAY);
+	scaled_gray.convertTo(scaled_image_float, CV_32FC1);
 
 	std::cout << "Run JBU for image " << problem.ref_image_id << ".jpg" << std::endl;
 	RunJBU(scaled_image_float, ref_depth, dense_folder, problem);
@@ -1057,6 +1206,23 @@ int main(int argc, char** argv)
 	}
 
 	int max_num_downscale = ComputeMultiScaleSettings(dense_folder, problems, initial_image_scale);
+	size_t image_cache_capacity = 1;
+	for (const Problem& problem : problems) {
+		std::unordered_set<int> active_image_ids(problem.src_image_ids.begin(),
+			problem.src_image_ids.end());
+		active_image_ids.insert(problem.ref_image_id);
+		image_cache_capacity = std::max(image_cache_capacity, active_image_ids.size());
+	}
+	if (image_cache_capacity > MAX_IMAGES) {
+		std::cerr << "A ProcessProblem requires " << image_cache_capacity
+			<< " images, exceeding MAX_IMAGES=" << MAX_IMAGES << "." << std::endl;
+		return EXIT_FAILURE;
+	}
+	std::shared_ptr<ScaledImageCache> scaled_image_cache(
+		new ScaledImageCache(image_cache_capacity));
+	for (Problem& problem : problems) {
+		problem.scaled_image_cache = scaled_image_cache;
+	}
 
 	int flag = 0;
 	int geom_iterations;
@@ -1076,6 +1242,9 @@ int main(int argc, char** argv)
 				problems[i].num_downscale--;
 			}
 		}
+		const std::vector<std::string> scaled_image_files = PrepareScaleImages(
+			dense_folder, problems, *scaled_image_cache);
+		scaled_image_cache->ResetStats();
 
 		if (flag == 0) {
 			flag = 1;
@@ -1122,7 +1291,8 @@ int main(int argc, char** argv)
 		}
 		else {
 			for (size_t i = 0; i < num_images; ++i) {
-				JointBilateralUpsampling(dense_folder, problems[i], problems[i].cur_max_side);
+				JointBilateralUpsampling(dense_folder, problems[i],
+					problems[i].cur_max_side, *scaled_image_cache);
 			}
 
 			hierarchy = true;
@@ -1170,6 +1340,13 @@ int main(int argc, char** argv)
 				}
 			}
 		}
+		std::cout << "Scaled-image cache for pyramid layer " << max_num_downscale
+			<< ": " << scaled_image_cache->CacheHits() << " hits, "
+			<< scaled_image_cache->CacheMisses() << " temporary-file reads, "
+			<< scaled_image_cache->DiskReadSeconds() << " s reading cached images."
+			<< std::endl;
+		scaled_image_cache->Clear();
+		RemoveScaleImageFiles(scaled_image_files);
 
 		max_num_downscale--;
 	}
